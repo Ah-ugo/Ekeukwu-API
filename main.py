@@ -69,6 +69,7 @@ payment_history_collection = db.payment_history
 # Convert ObjectId to string
 PyObjectId = Annotated[str, BeforeValidator(str)]
 
+
 # Security Setup
 SECRET_KEY = "1234567890"
 ALGORITHM = "HS256"
@@ -92,6 +93,7 @@ class AddUser(BaseModel):
 
 
 class User(BaseModel):
+    id: Optional[PyObjectId] = Field(alias="_id", default=None)
     name: Optional[str] = None
     email: Optional[str] = None
 
@@ -212,6 +214,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+
 def get_user(db, email: str):
     user = db.find_one({"email": email})
     if user:
@@ -221,12 +224,14 @@ def authenticate_user(db, email: str, password: str):
     user = get_user(db, email)
     if not user:
         return False
+    # Access hashed_password correctly from the dictionary
     if not verify_password(password, user.hashed_password):
         return False
     return user
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -236,16 +241,21 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
-        if email is None:
+        user_id: str = payload.get("id")  # Extract user ID from token
+        # user_id: str = payload.get("sub")
+        if email is None or user_id is None:
             raise credentials_exception
         token_data = TokenData(email=email)
     except JWTError:
         raise credentials_exception
 
-    user = get_user(user_collection, email=token_data.email)
+    # user = get_user(user_collection, email=token_data.email)
+    user = db["user"].find_one({"_id": ObjectId(user_id)})
     if user is None:
         raise credentials_exception
     return user
+    # return {"id": user_id, "email": email, "name": user.name}  # Include user ID in response
+
 
 # Routes
 
@@ -256,6 +266,7 @@ async def register_user(user: UserInDB):
     user_collection.insert_one(user.dict())
     return user
 
+
 @app.post("/token", response_model=Token, tags=["Auth"])
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate_user(user_collection, form_data.username, form_data.password)
@@ -265,15 +276,20 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    # Fix the user ID reference in the token payload
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": user.email, "id": str(user.id)},
+        expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+
+    return {"access_token": access_token, "token_type": "bearer", "_id": user.id}
 
 
-@app.get("/users/me", response_model=User, tags=["Auth"])
-async def read_users_me(current_user: User = Depends(get_current_user)):
+@app.get("/users/me", response_model=GetUser, tags=["Auth"])
+async def read_users_me(current_user: GetUser = Depends(get_current_user)):
     return current_user
 
 # Manage Users
@@ -309,15 +325,13 @@ def Get_User_By_Id(id:str, current_user: User = Depends(get_current_user)):
     else:
         raise HTTPException(status_code=404, detail="User not found")
 
-@app.get("/users/", tags=["Auth"])
-def Login_Users(email=str, password=str, current_user: User = Depends(get_current_user)):
-    userQuery = user_collection.find_one({"email": email, "password": password})
-
-    if userQuery:
-        userQuery["_id"] = str(userQuery["_id"])
-        return userQuery
+@app.get("/users/login", tags=["Auth"])
+def Login_Users(email: str, password: str):
+    user = user_collection.find_one({"email": email})
+    if user and verify_password(password, user['hashed_password']):
+        return {"message": "Login successful"}
     else:
-        raise HTTPException(status_code=404, detail="Incorrect email or password")
+        raise HTTPException(status_code=400, detail="Invalid credentials")
 
 @app.patch("/users/{id}", tags=["Manage Users"])
 def Update_Users(id:str, body: AddUser, current_user: User = Depends(get_current_user)):
