@@ -111,6 +111,12 @@ class LoginUser(BaseModel):
     email: Optional[str] = None
     password: Optional[str] = None
 
+# Model for shop response
+class PaymentOptions(BaseModel):
+    outright: Optional[float] = None
+    staggered: Optional[float] = None
+    lease_to_own: Optional[float] = None
+
 
 class GetShops(BaseModel):
     id: Optional[PyObjectId] = Field(alias="_id", default=None)
@@ -118,6 +124,7 @@ class GetShops(BaseModel):
     description: Optional[str] = None
     address: Optional[str] = None
     price: Optional[str] = None
+    payment_options: Optional[PaymentOptions] = None
     images: Optional[List[Optional[str]]] = None
     availability: Optional[str] = None
 
@@ -172,6 +179,54 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Payment Processing Functions
+
+# Function to calculate payment options
+def calculate_payment_options(price: float) -> PaymentOptions:
+    price = float(price)
+    return PaymentOptions(
+        outright=price,
+        staggered=price / 4,  # Example: divide price into 4 monthly installments
+        lease_to_own=price / 60  # Example: divide price into 60 monthly payments for lease-to-own
+    )
+
+
+# Function to update payment options for all shops
+def update_shops_with_payment_options():
+    # Fetch all shops (you might want to filter based on certain criteria, e.g., missing payment_options)
+    shops = shops_collection.find({"payment_options": {"$exists": False}})
+
+    for shop in shops:
+        price = shop.get("price")
+
+        # Skip shops with no valid price
+        if not price:
+            continue
+
+        # Calculate payment options (convert price to float if necessary)
+        try:
+            price = float(price)
+        except ValueError:
+            print(f"Invalid price for shop {shop['_id']}")
+            continue
+
+        payment_options = calculate_payment_options(price)
+
+        # Update the shop with the new payment options
+        shops_collection.update_one(
+            {"_id": shop["_id"]},
+            {"$set": {"payment_options": payment_options.dict()}}  # dict() to convert Pydantic model to a dictionary
+        )
+        print(f"Updated shop {shop['_id']} with payment options.")
+
+
+
+
+
+# Run the update function
+update_shops_with_payment_options()
+
 
 # Function to send email reminders
 def send_email_reminder(email: str, message: str):
@@ -384,12 +439,14 @@ def Add_Shop(request: Request, title: str = Form(...), description: str = Form(.
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Image upload failed: {str(e)}")
 
+    payment_options = calculate_payment_options(price)
     # Create shop data to insert into MongoDB
     shop_data = {
         "title": title,
         "description": description,
         "address": address,
         "price": price,
+        "payment_options": payment_options.dict(),
         "images": image_urls,  # Store URLs of uploaded images
         "availability": availability
     }
